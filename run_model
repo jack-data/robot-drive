@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+
+import rospy
+import joblib
+
+from tkinter import *
+from tkinter import filedialog
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.linear_model import LinearRegression
+from geometry_msgs.msg import Twist
+from tango_msgs.msg import infrareds
+
+class RunModelNode():
+    def __init__(self, pub_topic, move_speed):
+        Tk().withdraw()
+        self.model = joblib.load(filedialog.askopenfilenames(initialdir="", title="Select the model file")[0])
+        self.move_speed = move_speed
+        self.angle_val = 6
+        self.linear_vel = 0
+        self.angular_vel = 0
+        self.pub_topic = pub_topic
+
+    def predict_from_infrareds(self, data):
+        #Get each laser reading
+        i_0 = data.front_c_ir.range
+        i_1 = data.front_r_inner_ir.range
+        i_2 = data.front_r_outer_ir.range
+        i_3 = data.rear_r_ir.range
+        i_4 = data.rear_l_ir.range
+        i_5 = data.front_l_outer_ir.range
+        i_6 = data.front_l_inner_ir.range
+
+        #Store in 2d array for model
+        model_input = [[i_0, i_1, i_2, i_3, i_4, i_5, i_6]]
+
+        #Make model prediction
+        prediction = self.model.predict(model_input)
+
+        self.linear_vel = prediction[0][0] * self.move_speed
+        self.angular_vel = self.angle_val * prediction[0][1] * self.move_speed
+
+    def publish_twist(self):
+        msg = Twist()
+        msg.linear.x = self.linear_vel
+        msg.angular.z = self.angular_vel
+
+        twist_pub = rospy.Publisher(self.pub_topic, Twist, queue_size=10)
+
+        twist_pub.publish(msg)
+
+        rospy.loginfo(f"Linear vel: {self.linear_vel}")
+        rospy.loginfo(f"Angular vel: {self.angular_vel}")
+
+def main():
+    rospy.init_node('run_model')
+    rate = rospy.Rate(10)
+    move_speed = 0.2
+    topic = "/cmd_vel"
+    main_node = RunModelNode(topic, move_speed)
+
+    while not rospy.is_shutdown():
+        infrareds_sub = rospy.Subscriber("/infrareds", infrareds, main_node.predict_from_infrareds)
+        main_node.publish_twist()
+        rate.sleep()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass

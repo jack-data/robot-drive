@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+
+import time
+import rospy
+import rosbag
+import subprocess
+
+from datetime import datetime
+from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Pose
+from sensor_msgs.msg import Joy
+from sensor_msgs.msg import LaserScan
+
+class XboxNode():
+    def __init__(self, pub_topic, move_speed):
+
+        self.ROSBAG_TOPICS = rospy.get_param('rosbag_topics')
+        self.PUB_TOPIC = rospy.get_param('pub_topic')
+        self.ROSBAG_FILE_PATH = rospy.get_param('rosbag_files_path')
+
+        #Capturing process defaulted to None, should only be something else if a subprocess is running
+        self.capturing_process = None 
+
+        #Time used for naming files
+        self.time = datetime.today().strftime('%Y-%m-%d-%H:%M:%S')
+
+        #Command to record ros topics using the xbox 'A' button
+        self.capture_cmd = f"rosbag record -O {self.ROSBAG_FILE_PATH}{self.time}.bag {' '.join(self.ROSBAG_TOPICS)}"
+
+        self.capturing = False
+
+        self.pub_topic = pub_topic
+        self.move_speed = move_speed
+
+        self.linear_vel = 0
+        self.angular_vel = 0
+
+    def capture(self):
+        self.update_cmd()
+        if self.capturing_process is None:
+            self.capturing_process = subprocess.Popen(self.capture_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            rospy.loginfo("Capturing has started at " + self.time)
+        else:
+            return
+
+    def stop_capturing(self):
+        self.update_time()
+        if self.capturing_process is not None:
+            self.capturing_process.terminate()
+            self.capturing_process = None
+            rospy.loginfo("Capturing has stopped at " + self.time)
+        else:
+            return
+
+    def update_time(self):
+        self.time = datetime.today().strftime('%Y-%m-%d-%H:%M:%S')
+
+    def update_cmd(self):
+        self.update_time()
+        self.capture_cmd = f"rosbag record -O {self.ROSBAG_FILE_PATH}{self.time}.bag {' '.join(self.ROSBAG_TOPICS)}"
+
+    def joy_update(self, data):
+
+        self.linear_vel = data.axes[1] * self.move_speed
+        self.angular_vel = 6 * (data.axes[0] * self.move_speed) #Angular increased by magic number determined through trial and error with Tango
+        
+        #Check if buttons have been pressed on the xbox controller
+        if 1 in data.buttons: 
+            #If the button pressed is 'A' and 'B' is not also pressed
+            if (data.buttons[0] == 1) and (data.buttons[1] == 0):
+                #Check if the capturing parameter exists on the server
+                if self.capturing is False:
+                    #If it does, check its value and only run if it's false so that we only run this code once
+                    self.capturing = True
+                    self.capture()
+
+            elif (data.buttons[1] == 1) and (data.buttons[0] == 0):
+                #If the button pressed is 'B' and 'A' is not also pressed
+                if self.capturing is True:
+                    self.capturing = False
+                    self.stop_capturing()
+
+    def publish_twist(self):
+        msg = Twist()
+        msg.linear.x = self.linear_vel
+        msg.angular.z = self.angular_vel
+
+        twist_pub = rospy.Publisher(self.pub_topic, Twist, queue_size=10)
+
+        twist_pub.publish(msg)
+    
+def main():
+    rospy.init_node('tango_xbox')
+    rate = rospy.Rate(10)
+    main_node = XboxNode("/cmd_vel", 0.2)
+
+    while not rospy.is_shutdown():
+        joy_sub = rospy.Subscriber("joy", Joy, main_node.joy_update)
+        main_node.publish_twist()
+        rate.sleep()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass
